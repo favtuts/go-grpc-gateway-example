@@ -195,6 +195,62 @@ go get google.golang.org/genproto # Contains the generated Go packages for commo
 ```
 
 Or you can run the command for automatic resolving the dependencies:
-```
+```bash
 $ go mod tidy
+```
+
+Let’s write some code to see the generated Order struct in action. Create a temporary `main.go` file in the root directory with the following code:
+```go
+// main.go
+
+package main
+
+import (
+	"fmt"
+	"log"
+
+	"google.golang.org/genproto/googleapis/type/date"
+	"google.golang.org/protobuf/encoding/protojson"
+
+	"github.com/favtuts/go-grpc-gateway-example/protogen/golang/orders"
+	"github.com/favtuts/go-grpc-gateway-example/protogen/golang/product"
+)
+
+func main() {
+	orderItem := orders.Order{
+		OrderId:    10,
+		CustomerId: 11,
+		IsActive:   true,
+		OrderDate:  &date.Date{Year: 2021, Month: 1, Day: 1},
+		Products: []*product.Product{
+			{ProductId: 1, ProductName: "CocaCola", ProductType: product.ProductType_DRINK},
+		},
+	}
+
+	bytes, err := protojson.Marshal(&orderItem)
+	if err != nil {
+		log.Fatal("deserialization error:", err)
+	}
+
+	fmt.Println(string(bytes))
+}
+```
+
+The created order-item will be serialized to JSON using the `protojson` package.
+```bash
+go get google.golang.org/protobuf/encoding/protojson
+```
+
+You can run the code by typing:
+```bash
+$ go run main.go
+
+{"order_id":"10", "customer_id":"11", "is_active":true, "products":[{"product_id":"1", "product_name":"CocaCola", "product_type":"DRINK"}], "order_date":{"year":2024, "month":9, "day":19}}
+```
+
+Note that, gRPC will typically serialize the messages in binary format, which is faster and takes less space compared to a text format like JSON.
+
+As this was only for testing, you can remove the `main.go` file when you are finished:
+```bash
+rm main.go
 ```
