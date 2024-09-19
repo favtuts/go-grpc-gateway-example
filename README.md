@@ -187,3 +187,14 @@ $ make protoc
 ```
 
 It should generate the appropriate code in the `protogen/golang` directory.
+
+If you look at the generated code however, you may notice red squiggly lines in your IDE, indicating that your project lacks some of the expected dependencies. To address this, import the following packages.
+```bash
+go get google.golang.org/protobuf # Go implementation for protocol buffers
+go get google.golang.org/genproto # Contains the generated Go packages for common protocol buffer types
+```
+
+Or you can run the command for automatic resolving the dependencies:
+```
+$ go mod tidy
+```
