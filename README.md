@@ -492,3 +492,200 @@ curl: (1) Received HTTP/0.9 when not allowed
 Unfortunately, it’s not easy to test a gRPC server like a REST server by using tools like browsers, Postman, or curl.
 
 While there are tools available for testing gRPC servers, we’ll instead create an API gateway server to demonstrate how we can invoke methods in a manner similar to the REST paradigm.
+
+# Set up the API Gateway
+
+Reasons for using an API Gateway can range from maintaining backward-compatibility, supporting languages or clients that are not well-supported by gRPC, or simply maintaining the aesthetics and tooling associated with a RESTful JSON architecture.
+
+The diagram below shows one way that REST and gRPC can co-exist in the same system:
+
+![grpc-gateway-proxy](./images/gateway-proxying.png)
+
+Fortunately for our purposes, Google has a library called [grpc-gateway](https://github.com/grpc-ecosystem/grpc-gateway) that we can use to simplify the process of setting up a reverse proxy. It will act as a HTTP+JSON interface to the gRPC service. All that we need is a small amount of configuration to attach HTTP semantics to the service and it will be able to generate the necessary code.
+
+To help generate the gateway code, we require two additional binaries:
+```bash
+go get github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway
+go get github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2
+go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway
+go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2
+```
+
+As mentioned above, we need to make a few small adjustments to our service definition to make this work. But before we do that, we need to add two new files into our `proto/google/api` folder, namely [annotations.proto](https://github.com/googleapis/googleapis/blob/master/google/api/annotations.proto) and [http.proto](https://github.com/googleapis/googleapis/blob/master/google/api/http.proto):
+
+```bash
+curl -L https://raw.githubusercontent.com/googleapis/googleapis/master/google/api/annotations.proto -o proto/google/api/annotations.proto
+curl -L https://raw.githubusercontent.com/googleapis/googleapis/master/google/api/http.proto -o proto/google/api/http.proto
+```
+
+The proto directory should now look like this:
+```bash
+go-grpc-gateway-example/proto
+├── google
+│   └── api
+│       ├── annotations.proto
+│       ├── date.proto
+│       └── http.proto
+├── orders
+│   └── order.proto
+└── product
+    └── product.proto
+```
+
+Next modify the `proto/orders/orders.proto` file to add the gateway server changes. The new contents look like this:
+```proto
+// ./proto/orders/orders.proto
+
+syntax = "proto3";
+
+option go_package = "github.com/favtuts/go-grpc-gateway-example/protogen/golang/orders";
+
+import "product/product.proto";
+import "google/api/annotations.proto";
+import "google/api/date.proto";
+
+message Order {
+	...
+}
+
+// A generic empty message that you can re-use to avoid defining duplicated
+// empty messages in your APIs
+message Empty {}
+
+message PayloadWithSingleOrder {
+  Order order = 1;
+}
+
+service Orders {
+  rpc AddOrder(PayloadWithSingleOrder) returns (Empty) {
+    option (google.api.http) = {
+      post: "/v0/orders",
+      body: "*"
+    };
+  }
+}
+```
+
+Notice how we’ve designated `AddOrder` as a `POST` endpoint with the path as `/v0/orders` and body specified as “*”. This indicates that the entire request body will be utilized as input for the `AddOrder` invocation.
+
+Next, let’s modify our `Makefile` and add the new gRPC gateway options to our existing `protoc` command.
+```Makefile
+# Makefile
+
+protoc:
+	cd proto && protoc --go_out=../protogen/golang --go_opt=paths=source_relative \
+	--go-grpc_out=../protogen/golang --go-grpc_opt=paths=source_relative \
+	--grpc-gateway_out=../protogen/golang --grpc-gateway_opt paths=source_relative \
+	--grpc-gateway_opt generate_unbound_methods=true \
+	./**/*.proto
+```
+
+Use the `Makefile` to generate the necessary code again by typing:
+```bash
+make protoc
+```
+
+A new file will be created with the path `protogen/golang/orders/order.pb.gw.go`. If you take a peek at the generated code, you’ll see a function called `RegisterOrdersHandlerServer`, with a function body that resembles a typical REST handler register that we’d write in Go.
+
+Now that we have successfully generated the handler code, let’s create the API gateway server. Create a `cmd/client` directory and then create a new file with the path `cmd/client/main.go`:
+```go
+// ./cmd/client/main.go
+
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	"github.com/favtuts/go-grpc-gateway-example/protogen/golang/orders"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+)
+
+func main() {
+	// Set up a connection to the order server.
+	orderServiceAddr := "localhost:50051"
+	conn, err := grpc.Dial(orderServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Fatalf("could not connect to order service: %v", err)
+	}
+	defer conn.Close()
+
+	// Register gRPC server endpoint
+	// Note: Make sure the gRPC server is running properly and accessible
+	mux := runtime.NewServeMux()
+	if err = orders.RegisterOrdersHandler(context.Background(), mux, conn); err != nil {
+		log.Fatalf("failed to register the order server: %v", err)
+	}
+
+	// start listening to requests from the gateway server
+	addr := "0.0.0.0:8080"
+	fmt.Println("API gateway server is running on " + addr)
+	if err = http.ListenAndServe(addr, mux); err != nil {
+		log.Fatal("gateway server closed abruptly: ", err)
+	}
+}
+```
+
+We initiated a connection to the gRPC server running on `localhost:50051` and established a new HTTP server running on `0.0.0.0:8080`. This server is configured to receive requests and execute the relevant gRPC methods for the orders service.
+
+We can test this by creating a payload file called `data.json` with the following content:
+```json
+{
+  "order": {
+    "order_id": "14",
+    "customer_id": "11",
+    "is_active": true,
+    "products": [
+      {
+        "product_id": "1",
+        "product_name": "CocaCola",
+        "product_type": "DRINK"
+      }
+    ],
+    "order_date": {
+      "year": 2023,
+      "month": 11,
+      "day": 26
+    }
+  }
+}
+```
+
+Start up both services by executing the following in two separate terminal windows:
+```bash
+go run cmd/server/main.go
+go run cmd/client/main.go
+```
+
+Now, in a third terminal, send the payload to the server by typing:
+```bash
+curl -d "@data.json" -X POST -i http://localhost:8080/v0/orders
+```
+
+You should receive a 200 status message indicating that the payload was accepted:
+```bash
+HTTP/1.1 200 OK
+Content-Length: 2
+Content-Type: application/json
+Grpc-Metadata-Content-Type: application/grpc
+Date: Fri, 20 Sep 2024 03:17:49 GMT
+
+{}
+```
+
+The gateway server will log the request as well:
+```bash
+2024/09/20 10:17:26 server listening at [::]:50051
+2024/09/20 10:17:49 Received an add-order request
+```
+
+The REST API is running:
+```bash
+API gateway server is running on 0.0.0.0:8080
+```
+
+The entire flow is operational. Now, its time to add a few more CRUD operations and run a postman test suite to see if we can get all the Postman tests to pass.
