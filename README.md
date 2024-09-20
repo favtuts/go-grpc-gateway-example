@@ -689,3 +689,179 @@ API gateway server is running on 0.0.0.0:8080
 ```
 
 The entire flow is operational. Now, its time to add a few more CRUD operations and run a postman test suite to see if we can get all the Postman tests to pass.
+
+# Finish the rest of the app and test using postman
+
+Let’s add a few more CRUD methods to our Orders service to get a complete picture.
+
+We’ll start by modifying our `proto/orders/order.proto` file with few added definitions.
+
+```proto
+// ./proto/orders/order.proto
+. . .
+
+message PayloadWithOrderID {
+  uint64 order_id = 1;
+}
+
+. . .
+
+service Orders {
+  . . .
+
+  rpc GetOrder(PayloadWithOrderID) returns (PayloadWithSingleOrder) {
+    option (google.api.http) = {
+      get: "/v0/orders/{order_id}",
+    };
+  }
+
+  rpc UpdateOrder(PayloadWithSingleOrder) returns (Empty) {
+    option (google.api.http) = {
+      put: "/v0/orders",
+      body: "*"
+    };
+  }
+
+  rpc RemoveOrder(PayloadWithOrderID) returns (Empty) {
+    option (google.api.http) = {
+      delete: "/v0/orders/{order_id}",
+    };
+  }
+}
+```
+
+Notice how we have added `GetOrder` endpoint with the path `/v0/orders/{order_id}` which includes a path parameter.
+
+Next we’ll update our in-memory db to add few more methods. Open the `internal/db.go` file and add the following functions to the end of the file:
+```go
+// ./internal/db.go
+. . .
+
+// GetOrderByID returns an order by the order_id
+func (d *DB) GetOrderByID(orderID uint64) *orders.Order {
+	for _, o := range d.collection {
+		if o.OrderId == orderID {
+			return o
+		}
+	}
+	return nil
+}
+
+// GetOrdersByIDs returns all orders pertaining to the given order ids
+func (d *DB) GetOrdersByIDs(orderIDs []uint64) []*orders.Order {
+	filtered := make([]*orders.Order, 0)
+
+	for _, idx := range orderIDs {
+		for _, order := range d.collection {
+			if order.OrderId == idx {
+				filtered = append(filtered, order)
+				break
+			}
+		}
+	}
+
+	return filtered
+}
+
+// UpdateOrder updates an order in place
+func (d *DB) UpdateOrder(order *orders.Order) {
+	for i, o := range d.collection {
+		if o.OrderId == order.OrderId {
+			d.collection[i] = order
+			return
+		}
+	}
+}
+
+// RemoveOrder removes an order from the orders collection
+func (d *DB) RemoveOrder(orderID uint64) {
+	filtered := make([]*orders.Order, 0, len(d.collection)-1)
+	for i := range d.collection {
+		if d.collection[i].OrderId != orderID {
+			filtered = append(filtered, d.collection[i])
+		}
+	}
+	d.collection = filtered
+}
+```
+
+
+Finally, we’ll add the implementations for the newly added RPC methods in our `internal/orderservice.go` file. Replace the file contents with the following code:
+```go
+// ./internal/orderservice.go
+
+package internal
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/favtuts/go-grpc-gateway-example/protogen/golang/orders"
+)
+
+// OrderService should implement the OrdersServer interface generated from grpc.
+//
+// UnimplementedOrdersServer must be embedded to have forwarded compatible implementations.
+type OrderService struct {
+	db *DB
+	orders.UnimplementedOrdersServer
+}
+
+// NewOrderService creates a new OrderService
+func NewOrderService(db *DB) OrderService {
+	return OrderService{db: db}
+}
+
+// AddOrder implements the AddOrder method of the grpc OrdersServer interface to add a new order
+func (o *OrderService) AddOrder(_ context.Context, req *orders.PayloadWithSingleOrder) (*orders.Empty, error) {
+	log.Printf("Received an add order request")
+
+	err := o.db.AddOrder(req.GetOrder())
+
+	return &orders.Empty{}, err
+}
+
+// GetOrder implements the GetOrder method of the grpc OrdersServer interface to fetch an order for a given orderID
+func (o *OrderService) GetOrder(_ context.Context, req *orders.PayloadWithOrderID) (*orders.PayloadWithSingleOrder, error) {
+	log.Printf("Received get order request")
+
+	order := o.db.GetOrderByID(req.GetOrderId())
+	if order == nil {
+		return nil, fmt.Errorf("order not found for orderID: %d", req.GetOrderId())
+	}
+
+	return &orders.PayloadWithSingleOrder{Order: order}, nil
+}
+
+// UpdateOrder implements the UpdateOrder method of the grpc OrdersServer interface to update an order
+func (o *OrderService) UpdateOrder(_ context.Context, req *orders.PayloadWithSingleOrder) (*orders.Empty, error) {
+	log.Printf("Received an update order request")
+
+	o.db.UpdateOrder(req.GetOrder())
+
+	return &orders.Empty{}, nil
+}
+
+// RemoveOrder implements the RemoveOrder method of the grpc OrdersServer interface to remove an order
+func (o *OrderService) RemoveOrder(_ context.Context, req *orders.PayloadWithOrderID) (*orders.Empty, error) {
+	log.Printf("Received a remove order request")
+
+	o.db.RemoveOrder(req.GetOrderId())
+
+	return &orders.Empty{}, nil
+}
+```
+
+Rerun the Makefile to generate the new files:
+```bash
+make protoc
+```
+
+The great thing about our gateway service is that all of these new endpoints work seamlessly without needing to add additional code.
+
+In the repository for this project, you can find a [test suite](./grpc.postman_collection.json) for Postman that you can optionally use to test the whole flow in an end-to-end fashion.
+
+If you download this Postman collection and import it, you should be able to see all our tests passing with flying colors. Just set the `gateway-service-url` variable to `http://localhost:8080` when you run the tests:
+
+![postman-testing](./images/postman-testing.png)
