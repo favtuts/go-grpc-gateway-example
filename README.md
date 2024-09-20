@@ -311,3 +311,184 @@ To make the generated code work in our system we need to install the following g
 ```bash
 go get google.golang.org/grpc
 ```
+
+# Service implementation
+
+If you look at the generated gRPC code in the `protogen/golang/orders/order_grpc.pb.go` file, you’ll see the below interface defined.
+```go
+// ./protogen/golang/orders/order_grpc.pb.go
+
+. . .
+// OrdersClient is the client API for Orders service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type OrdersClient interface {
+	AddOrder(ctx context.Context, in *PayloadWithSingleOrder, opts ...grpc.CallOption) (*Empty, error)
+}
+. . .
+```
+
+Our goal in this section is to create a structure which implements this interface and wire it up with a new gRPC server. We’ll use the necessary file structure:
+```bash
+go-grpc-gateway-example
+├── cmd
+│   └── server
+│       └── main.go
+├── go.mod
+├── go.sum
+├── internal
+│   ├── db.go
+│   └── orderservice.go
+├── Makefile
+├── proto
+│   ├── google
+│   │   └── api
+│   │       └── date.proto
+│   ├── orders
+│   │   └── order.proto
+│   └── product
+│       └── product.proto
+└── protogen
+    └── . . .
+```
+
+To create the missing directories and files, type:
+```bash
+mkdir -p cmd/server internal
+touch cmd/server/main.go internal/{db,orderservice}.go
+```
+
+Next, open the `internal/orderservice.go` file and paste in the following contents:
+```go
+// ./internal/orderservice.go
+
+package internal
+
+import (
+	"context"
+	"log"
+
+	"github.com/favtuts/go-grpc-gateway-example/protogen/golang/orders"
+)
+
+// OrderService should implement the OrdersServer interface generated from grpc.
+//
+// UnimplementedOrdersServer must be embedded to have forwarded compatible implementations.
+type OrderService struct {
+	db *DB
+	orders.UnimplementedOrdersServer
+}
+
+// NewOrderService creates a new OrderService
+func NewOrderService(db *DB) OrderService {
+	return OrderService{db: db}
+}
+
+// AddOrder implements the AddOrder method of the grpc OrdersServer interface to add a new order
+func (o *OrderService) AddOrder(_ context.Context, req *orders.PayloadWithSingleOrder) (*orders.Empty, error) {
+	log.Printf("Received an add-order request")
+
+	err := o.db.AddOrder(req.GetOrder())
+
+	return &orders.Empty{}, err
+}
+```
+
+The above code creates a `struct` called `OrderService` to implement the gRPC interface and we have added the same method signature as given in the interface definition for the `AddOrder` method. This method accepts an order from the request, stores it in a database, and returns an empty message along with any associated errors.
+
+We can create a mock version of an in-memory database using an array to illustrate that we can utilize databases and other services exactly the same way as we would in a REST environment.
+
+Place the following in the `internal/db.go` file:
+```go
+// ./internal/db.go
+package internal
+
+import (
+	"fmt"
+
+	"github.com/favtuts/go-grpc-gateway-example/protogen/golang/orders"
+)
+
+type DB struct {
+	collection []*orders.Order
+}
+
+// NewDB creates a new array to mimic the behaviour of a in-memory database
+func NewDB() *DB {
+	return &DB{
+		collection: make([]*orders.Order, 0),
+	}
+}
+
+// AddOrder adds a new order to the DB collection. Returns an error on duplicate ids
+func (d *DB) AddOrder(order *orders.Order) error {
+	for _, o := range d.collection {
+		if o.OrderId == order.OrderId {
+			return fmt.Errorf("duplicate order id: %d", order.GetOrderId())
+		}
+	}
+	d.collection = append(d.collection, order)
+	return nil
+}
+```
+
+Let’s create the gRPC server and see if we can register the `OrderService` that we have created above.
+
+Add the following to the `cmd/server/main.go` file:
+```go
+// ./cmd/server/main.go
+
+package main
+
+import (
+	"log"
+	"net"
+
+	"github.com/favtuts/go-grpc-gateway-example/internal"
+	"github.com/favtuts/go-grpc-gateway-example/protogen/golang/orders"
+	"google.golang.org/grpc"
+)
+
+func main() {
+	const addr = "0.0.0.0:50051"
+
+	// create a TCP listener on the specified port
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("failed to listen: %v", err)
+	}
+
+	// create a gRPC server instance
+	server := grpc.NewServer()
+
+	// create a order service instance with a reference to the db
+	db := internal.NewDB()
+	orderService := internal.NewOrderService(db)
+
+	// register the order service with the grpc server
+	orders.RegisterOrdersServer(server, &orderService)
+
+	// start listening to requests
+	log.Printf("server listening at %v", listener.Addr())
+	if err = server.Serve(listener); err != nil {
+		log.Fatalf("failed to serve: %v", err)
+	}
+}
+```
+
+The code above starts a gRPC server listening on port `50051` using the mock database we created. You can run it by typing:
+```bash
+go run cmd/server/main.go
+```
+
+After compilation, the server will start. This means that you have successfully created a service definition, generated the corresponding code, implemented a service based on those definitions, registered the service, and initialized a gRPC server!
+
+Though the server is running, you can confirm that the server doesn’t respond to HTTP requests by making a request with curl:
+```bash
+$ curl 127.0.0.1:50051
+
+curl: (1) Received HTTP/0.9 when not allowed
+```
+Unfortunately, it’s not easy to test a gRPC server like a REST server by using tools like browsers, Postman, or curl.
+
+While there are tools available for testing gRPC servers, we’ll instead create an API gateway server to demonstrate how we can invoke methods in a manner similar to the REST paradigm.
