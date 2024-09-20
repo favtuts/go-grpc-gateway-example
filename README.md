@@ -254,3 +254,60 @@ As this was only for testing, you can remove the `main.go` file when you are fin
 ```bash
 rm main.go
 ```
+
+# Service definitions and code generation
+
+We’ve looked at how to create message/payload definitions using protobuf. Now, let’s add the service (endpoints in REST) definitions to register in our gRPC server.
+
+Open the `order.proto` file in the `proto/orders` directory again and add the following definitions to the end of the file:
+```proto
+// ./proto/orders/order.proto
+
+. . .
+
+// A generic empty message that you can re-use to avoid defining duplicated
+// empty messages in your APIs
+message Empty {}
+
+message PayloadWithSingleOrder {
+  Order order = 1;
+}
+
+service Orders {
+  rpc AddOrder(PayloadWithSingleOrder) returns (Empty) {}
+}
+```
+
+Here, we’ve added a service definition to add a new order. It takes a payload with single order as an argument and returns an empty body.
+
+To compile this service definition, it is important to have a gRPC-specific binary installed. You can be install it with the following command:
+```bash
+$ go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+$ protoc-gen-go-grpc --version
+
+protoc-gen-go-grpc 1.5.1
+```
+
+Let’s modify the `protoc` command in our `Makefile` to generate gRPC code as well.
+```Makefile
+# Makefile
+
+protoc:
+	cd proto && protoc --go_out=../protogen/golang --go_opt=paths=source_relative \
+	--go-grpc_out=../protogen/golang --go-grpc_opt=paths=source_relative \
+	./**/*.proto
+```
+
+We have added two new arguments with `--go-grpc_out` and `--go-grpc_opt`.
+
+Run protoc target again:
+```bash
+make protoc
+```
+
+The output should now include a file with the path `protogen/golang/orders/order_grpc.pb.go`.
+
+To make the generated code work in our system we need to install the following gRPC dependency:
+```bash
+go get google.golang.org/grpc
+```

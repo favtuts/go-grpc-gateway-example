@@ -1,3 +1,4 @@
+/*
 // main.go
 
 package main
@@ -30,3 +31,4 @@ func main() {
 
 	fmt.Println(string(bytes))
 }
+*/
