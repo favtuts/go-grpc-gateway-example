@@ -865,3 +865,93 @@ In the repository for this project, you can find a [test suite](./grpc.postman_c
 If you download this Postman collection and import it, you should be able to see all our tests passing with flying colors. Just set the `gateway-service-url` variable to `http://localhost:8080` when you run the tests:
 
 ![postman-testing](./images/postman-testing.png)
+
+# Docker setup
+
+At the moment, we have to run and shut down the two services in two different terminal windows. Let’s improve the developer experience by incorporating Docker and docker-compose in our setup. This will also prove highly beneficial in the upcoming deployment of services through Docker.
+
+Add the below `Dockerfile` to the root of your project:
+```Dockerfile
+FROM golang:1.22-alpine AS builder
+ARG ORDER_SERVICE_ADDRESS
+WORKDIR /app
+COPY . .
+RUN go mod download
+RUN go build -o ./orders-service ./cmd/server/main.go
+RUN go build -ldflags  "-X main.orderServiceAddr=$ORDER_SERVICE_ADDRESS" -o ./gateway-service ./cmd/client/main.go
+
+FROM alpine:latest AS orders-service
+WORKDIR /app
+COPY --from=builder /app/orders-service .
+EXPOSE 50051
+ENTRYPOINT ["./orders-service"]
+
+FROM alpine:latest AS gateway-service
+WORKDIR /app
+COPY --from=builder /app/gateway-service .
+EXPOSE 8080
+ENTRYPOINT ["./gateway-service"]
+```
+
+The file above builds the two servers as two Docker targets using [multi-stage builds](https://docs.docker.com/build/building/multi-stage/).
+
+It also includes a `ORDER_SERVICE_ADDRESS` build argument that is passed to `go build` as an `ldflag` (linker flag). These linker flags expose variables during the compilation process. Let’s modify our gateway service code to accommodate this `ORDER_SERVICE_ADDRESS` variable.
+
+Modify the `cmd/client/main.go` file so that the `orderServiceAddr` is not hard-coded:
+```go
+// ./cmd/client/main.go
+
+package main
+
+import (
+	. . .
+)
+
+var orderServiceAddr string
+
+func main() {
+	// Set up a connection to the order server.
+	fmt.Println("Connecting to order service via", orderServiceAddr)
+	conn, err := grpc.Dial(orderServiceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+    . . .
+```
+
+We can also add a docker-compose file to serve both services locally. Create a `docker-compose.yaml` file in the project root directory with the following configuration:
+```yaml
+# docker-compose.yaml
+version: '3.8'
+services:
+  orders-service:
+    image: orders-service
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: orders-service
+    ports:
+      - '50051/tcp'
+    cpus: 0.125
+    mem_limit: 128m
+  gateway-service:
+    image: gateway-service
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: gateway-service
+      args:
+        ORDER_SERVICE_ADDRESS: orders-service:50051
+    ports:
+      - '8080:8080'
+    cpus: 0.125
+    mem_limit: 128m
+```
+
+We’ve specified build targets in each service that we define and set the `ORDER_SERVICE_ADDRESS` variable to `order-service` (the service name of the order service) followed by the port number. This works because [Compose](https://docs.docker.com/compose/networking/) enables services to discover and communicate with each other using service names as hostnames.
+
+You can start both services by typing:
+```bash
+$ docker-compose up -d
+$ docker ps
+
+0e427f325494   orders-service    "./orders-service"       14 seconds ago   Up 13 seconds   0.0.0.0:32768->50051/tcp, :::32768->50051/tcp   go-grpc-gateway-example-orders-service-1
+9ce0f4638a2d   gateway-service   "./gateway-service"      14 seconds ago   Up 13 seconds   0.0.0.0:8080->8080/tcp, :::8080->8080/tcp       go-grpc-gateway-example-gateway-service-1
+```

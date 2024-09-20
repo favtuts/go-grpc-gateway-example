@@ -1,6 +1,6 @@
 module github.com/favtuts/go-grpc-gateway-example
 
-go 1.22.4
+go 1.22
 
 require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.22.0 // indirect
